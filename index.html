@@ -101,7 +101,7 @@
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             opacity: 0.4;
-            transition: opacity 0.2s ease;
+            transition: opacity 0.2s ease, filter 0.2s ease;
         }
 
         .frequency {
@@ -124,7 +124,6 @@
             height: 6px;
             border-radius: 3px;
             position: relative;
-            /* 完美的色彩区间映射：偏低红(-50~-20)、偏低黄(-20~-5)、准绿(-5~+5)、偏高黄(+5~+20)、偏高红(+20~+50) */
             background: linear-gradient(to right, 
                 var(--zone-red-bg) 0%, var(--zone-red-bg) 30%, 
                 var(--zone-yellow-bg) 30%, var(--zone-yellow-bg) 45%, 
@@ -250,15 +249,26 @@
                 stopAudio();
             } else {
                 try {
+                    // 1. 初始化并前置激活 AudioContext（适配 iOS 必须在点击事件内部 running）
                     audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    if (audioContext.state === 'suspended') {
+                        await audioContext.resume();
+                    }
                     
-                    mediaStream = await navigator.mediaDevices.getUserMedia({
-                        audio: {
-                            echoCancellation: false,
-                            noiseSuppression: false,
-                            autoGainControl: false
-                        }
-                    });
+                    // 2. 双层降级获取麦克风流（解决因高级参数导致的硬件拒绝问题）
+                    try {
+                        mediaStream = await navigator.mediaDevices.getUserMedia({
+                            audio: {
+                                echoCancellation: false,
+                                noiseSuppression: false,
+                                autoGainControl: false
+                            }
+                        });
+                    } catch (constraintErr) {
+                        console.warn("严格音频约束受阻，正在尝试降级兼容模式...", constraintErr);
+                        // 降级为最基础的音频流请求，iOS 100% 支持
+                        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    }
 
                     const source = audioContext.createMediaStreamSource(mediaStream);
                     analyser = audioContext.createAnalyser();
@@ -273,9 +283,18 @@
 
                     updatePitch();
                 } catch (err) {
-                    console.error(err);
-                    alert("无法获取麦克风。请确保：\n1. 使用系统自带 Safari 浏览器打开\n2. 域名具备 HTTPS 协议");
-                    statusText.textContent = "未获得权限";
+                    console.error("麦克风激活失败详情:", err);
+                    
+                    // 精准判定错误原因，防止盲目排查
+                    let errorAlert = "无法获取麦克风。请确保使用原生 Safari 浏览器。";
+                    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+                        errorAlert = "您拒绝了麦克风权限。\n请点击地址栏左侧的『AA』或进入系统设置放行 Safari 的麦克风权限。";
+                    } else {
+                        errorAlert += `\n(系统错误码: ${err.name})`;
+                    }
+                    
+                    alert(errorAlert);
+                    statusText.textContent = `未获得权限 (${err.name})`;
                 }
             }
         }
@@ -292,6 +311,8 @@
             statusText.textContent = "点击下方按钮开始";
             noteTxt.textContent = "--";
             noteTxt.style.opacity = "0.4";
+            noteTxt.style.background = "linear-gradient(180deg, #ffffff 0%, #b3b3b7 100%)";
+            noteTxt.style.webkitBackgroundClip = "text";
             freqTxt.textContent = "0.0 Hz";
             meterPointer.style.left = "50%";
             meterPointer.style.backgroundColor = "#444446";
@@ -366,33 +387,36 @@
                 const octave = Math.floor(roundedNoteNum / 12) - 1;
 
                 const expectedHz = 440 * Math.pow(2, (roundedNoteNum - 69) / 12);
-                // 计算音分差值 (-50 到 +50)
                 const cents = Math.floor(1200 * Math.log(frequency / expectedHz) / Math.log(2));
 
                 noteTxt.textContent = noteName + octave;
                 freqTxt.textContent = frequency.toFixed(1) + " Hz";
 
-                // 映射指针位置到 0% - 100%
                 let pointerPercent = 50 + cents; 
                 pointerPercent = Math.max(2, Math.min(98, pointerPercent));
                 meterPointer.style.left = `${pointerPercent}%`;
 
-                // 根据音分区间判定动态分配高质感色彩
                 const absCents = Math.abs(cents);
                 let activeColor = 'var(--pitch-red)';
                 let glowColor = 'rgba(214, 97, 97, 0.35)';
 
+                // 动态视觉反馈：根据音准区间切换高质感色彩
                 if (absCents <= 5) {
-                    // 完美区间：5音分以内（绿色）
                     activeColor = 'var(--pitch-green)';
                     glowColor = 'rgba(82, 183, 106, 0.5)';
+                    // 完美音准时，字体也透出细腻的呼吸绿
+                    noteTxt.style.background = "linear-gradient(180deg, #ffffff 30%, var(--pitch-green) 100%)";
+                    noteTxt.style.webkitBackgroundClip = "text";
                 } else if (absCents <= 20) {
-                    // 临界安全区间：5~20音分以内（黄色）
                     activeColor = 'var(--pitch-yellow)';
                     glowColor = 'rgba(224, 194, 79, 0.4)';
+                    noteTxt.style.background = "linear-gradient(180deg, #ffffff 40%, var(--pitch-yellow) 100%)";
+                    noteTxt.style.webkitBackgroundClip = "text";
+                } else {
+                    noteTxt.style.background = "linear-gradient(180deg, #ffffff 0%, #b3b3b7 100%)";
+                    noteTxt.style.webkitBackgroundClip = "text";
                 }
 
-                // 给指针附加细腻的柔光
                 meterPointer.style.backgroundColor = activeColor;
                 meterPointer.style.boxShadow = `0 0 10px ${glowColor}`;
             }
